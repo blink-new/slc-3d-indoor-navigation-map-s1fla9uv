@@ -1,10 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
-import { OrbitControls, Text, Box } from '@react-three/drei'
-import { Search, Navigation, MapPin, Layers } from 'lucide-react'
+import { OrbitControls, Text, Box, Line } from '@react-three/drei'
+import { Search, Navigation, MapPin, Layers, ArrowRight, Clock, Route } from 'lucide-react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
-import { Card, CardContent } from './ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
+import { Badge } from './ui/badge'
+import { findPath, getPathNodes, navigationNodes, PathStep } from '../utils/pathfinding'
+import * as THREE from 'three'
 
 // Sample room data for St. Lawrence College
 const rooms = [
@@ -15,6 +18,35 @@ const rooms = [
   { id: 'CAFE', name: 'Cafeteria', floor: 1, position: [3, 1, 0], type: 'dining' },
   { id: 'LIB', name: 'Library', floor: 2, position: [0, 2, 3], type: 'library' }
 ]
+
+// Animated path line component
+function PathLine({ points, animated = true }: { points: THREE.Vector3[], animated?: boolean }) {
+  const lineRef = useRef<any>()
+  const [progress, setProgress] = useState(0)
+  
+  useFrame((state) => {
+    if (animated && lineRef.current) {
+      const time = state.clock.elapsedTime
+      setProgress((Math.sin(time * 2) + 1) / 2)
+    }
+  })
+  
+  if (points.length < 2) return null
+  
+  const visiblePoints = animated 
+    ? points.slice(0, Math.max(2, Math.floor(points.length * progress)))
+    : points
+  
+  return (
+    <Line
+      ref={lineRef}
+      points={visiblePoints}
+      color="#3b82f6"
+      lineWidth={4}
+      dashed={false}
+    />
+  )
+}
 
 // 3D Room component
 function Room({ room, isDestination, isOnPath }: { room: any, isDestination: boolean, isOnPath: boolean }) {
@@ -46,9 +78,68 @@ function Room({ room, isDestination, isOnPath }: { room: any, isDestination: boo
   )
 }
 
+// Navigation node component (hallways, stairs, elevators)
+function NavNode({ node, isOnPath }: { node: any, isOnPath: boolean }) {
+  const meshRef = useRef<any>()
+  
+  useFrame((state) => {
+    if (isOnPath && meshRef.current) {
+      meshRef.current.material.opacity = 0.7 + Math.sin(state.clock.elapsedTime * 3) * 0.3
+    }
+  })
+  
+  let color = '#94a3b8'
+  let size: [number, number, number] = [0.3, 0.1, 0.3]
+  
+  if (node.type === 'stairs') {
+    color = '#f59e0b'
+    size = [0.4, 0.2, 0.4]
+  } else if (node.type === 'elevator') {
+    color = '#8b5cf6'
+    size = [0.4, 0.3, 0.4]
+  } else if (node.type === 'entrance') {
+    color = '#ef4444'
+    size = [0.5, 0.2, 0.5]
+  }
+  
+  if (isOnPath) {
+    color = '#10b981'
+  }
+  
+  return (
+    <group position={node.position}>
+      <Box ref={meshRef} args={size} position={[0, size[1] / 2, 0]}>
+        <meshStandardMaterial 
+          color={color} 
+          transparent={isOnPath}
+          opacity={isOnPath ? 0.8 : 1}
+        />
+      </Box>
+      {node.type !== 'hallway' && (
+        <Text
+          position={[0, size[1] + 0.2, 0]}
+          fontSize={0.08}
+          color="#1e293b"
+          anchorX="center"
+          anchorY="middle"
+        >
+          {node.type.toUpperCase()}
+        </Text>
+      )}
+    </group>
+  )
+}
+
 // 3D Floor component
-function Floor({ level, rooms, destination, currentFloor }: { level: number, rooms: any[], destination: string | null, currentFloor: number }) {
+function Floor({ level, rooms, destination, currentFloor, pathNodes }: { 
+  level: number, 
+  rooms: any[], 
+  destination: string | null, 
+  currentFloor: number,
+  pathNodes: string[]
+}) {
   const floorRooms = rooms.filter(room => room.floor === level)
+  const floorNavNodes = Object.values(navigationNodes).filter(node => node.floor === level)
   const opacity = level === currentFloor ? 1 : 0.3
   
   return (
@@ -65,7 +156,16 @@ function Floor({ level, rooms, destination, currentFloor }: { level: number, roo
           key={room.id}
           room={room}
           isDestination={room.id === destination}
-          isOnPath={false}
+          isOnPath={pathNodes.includes(room.id)}
+        />
+      ))}
+      
+      {/* Navigation nodes */}
+      {floorNavNodes.map(node => (
+        <NavNode
+          key={node.id}
+          node={node}
+          isOnPath={pathNodes.includes(node.id)}
         />
       ))}
       
@@ -83,44 +183,35 @@ function Floor({ level, rooms, destination, currentFloor }: { level: number, roo
   )
 }
 
-// Main entrance marker
-function Entrance() {
-  const meshRef = useRef<any>()
+// 3D Scene component
+function Scene3D({ destination, currentFloor, pathSteps }: { 
+  destination: string | null, 
+  currentFloor: number,
+  pathSteps: PathStep[]
+}) {
+  const pathNodes = getPathNodes(pathSteps)
   
-  useFrame((state) => {
-    if (meshRef.current) {
-      meshRef.current.position.y = 0.2 + Math.sin(state.clock.elapsedTime * 2) * 0.1
-    }
+  // Create path line points
+  const pathPoints = pathSteps.map(step => {
+    const node = navigationNodes[step.to]
+    return new THREE.Vector3(node.position[0], node.position[1], node.position[2])
   })
   
-  return (
-    <group position={[0, 1, -4]}>
-      <mesh ref={meshRef}>
-        <coneGeometry args={[0.2, 0.4, 8]} />
-        <meshStandardMaterial color="#ef4444" />
-      </mesh>
-      <Text
-        position={[0, 0.8, 0]}
-        fontSize={0.15}
-        color="#dc2626"
-        anchorX="center"
-        anchorY="middle"
-      >
-        ENTRANCE
-      </Text>
-    </group>
-  )
-}
-
-// 3D Scene component
-function Scene3D({ destination, currentFloor }: { destination: string | null, currentFloor: number }) {
+  if (pathSteps.length > 0) {
+    const startNode = navigationNodes[pathSteps[0].from]
+    pathPoints.unshift(new THREE.Vector3(startNode.position[0], startNode.position[1], startNode.position[2]))
+  }
+  
   return (
     <>
       <ambientLight intensity={0.6} />
       <pointLight position={[10, 10, 10]} intensity={1} />
       <directionalLight position={[5, 5, 5]} intensity={0.5} />
       
-      <Entrance />
+      {/* Animated path line */}
+      {pathPoints.length > 1 && (
+        <PathLine points={pathPoints} animated={true} />
+      )}
       
       {[1, 2, 3].map(floor => (
         <Floor
@@ -129,6 +220,7 @@ function Scene3D({ destination, currentFloor }: { destination: string | null, cu
           rooms={rooms}
           destination={destination}
           currentFloor={currentFloor}
+          pathNodes={pathNodes}
         />
       ))}
       
@@ -144,12 +236,86 @@ function Scene3D({ destination, currentFloor }: { destination: string | null, cu
   )
 }
 
+// Directions panel component
+function DirectionsPanel({ pathSteps, currentStep }: { pathSteps: PathStep[], currentStep: number }) {
+  if (pathSteps.length === 0) return null
+  
+  const totalDistance = pathSteps.reduce((sum, step) => sum + step.distance, 0)
+  const estimatedTime = Math.ceil(totalDistance * 0.5) // Rough estimate: 0.5 min per unit
+  
+  return (
+    <Card className="bg-white/95 backdrop-blur-sm border-slate-200 max-h-80 overflow-y-auto">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center space-x-2 text-lg">
+          <Route className="h-5 w-5 text-blue-600" />
+          <span>Turn-by-Turn Directions</span>
+        </CardTitle>
+        <div className="flex items-center space-x-4 text-sm text-slate-600">
+          <div className="flex items-center space-x-1">
+            <MapPin className="h-4 w-4" />
+            <span>{totalDistance.toFixed(1)} units</span>
+          </div>
+          <div className="flex items-center space-x-1">
+            <Clock className="h-4 w-4" />
+            <span>~{estimatedTime} min</span>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {pathSteps.map((step, index) => (
+          <div
+            key={index}
+            className={`flex items-start space-x-3 p-2 rounded-md transition-colors ${
+              index === currentStep ? 'bg-blue-50 border border-blue-200' : 'hover:bg-slate-50'
+            }`}
+          >
+            <div className="flex-shrink-0 mt-1">
+              {index === currentStep ? (
+                <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse" />
+              ) : (
+                <div className="w-2 h-2 bg-slate-300 rounded-full" />
+              )}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-slate-900">
+                {step.instruction}
+              </div>
+              <div className="flex items-center space-x-2 mt-1">
+                <Badge variant="outline" className="text-xs">
+                  Floor {step.floor}
+                </Badge>
+                {step.floorChange && (
+                  <Badge 
+                    variant="secondary" 
+                    className={`text-xs ${
+                      step.floorChange === 'up' ? 'bg-green-100 text-green-800' : 'bg-orange-100 text-orange-800'
+                    }`}
+                  >
+                    {step.floorChange === 'up' ? '↑' : '↓'} Floor Change
+                  </Badge>
+                )}
+                <span className="text-xs text-slate-500">
+                  {step.distance.toFixed(1)} units
+                </span>
+              </div>
+            </div>
+            <ArrowRight className="h-4 w-4 text-slate-400 flex-shrink-0 mt-0.5" />
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function Navigation3D() {
   const [searchQuery, setSearchQuery] = useState('')
   const [destination, setDestination] = useState<string | null>(null)
   const [currentFloor, setCurrentFloor] = useState(1)
   const [filteredRooms, setFilteredRooms] = useState<any[]>([])
   const [showSuggestions, setShowSuggestions] = useState(false)
+  const [pathSteps, setPathSteps] = useState<PathStep[]>([])
+  const [currentStep, setCurrentStep] = useState(0)
+  const [showDirections, setShowDirections] = useState(false)
 
   useEffect(() => {
     if (searchQuery) {
@@ -170,12 +336,37 @@ export default function Navigation3D() {
     setCurrentFloor(room.floor)
     setSearchQuery(room.id)
     setShowSuggestions(false)
+    
+    // Calculate path from entrance to destination
+    const steps = findPath('ENTRANCE', room.id)
+    setPathSteps(steps)
+    setCurrentStep(0)
+    setShowDirections(true)
   }
 
   const clearDestination = () => {
     setDestination(null)
     setSearchQuery('')
     setCurrentFloor(1)
+    setPathSteps([])
+    setCurrentStep(0)
+    setShowDirections(false)
+  }
+
+  const nextStep = () => {
+    if (currentStep < pathSteps.length - 1) {
+      setCurrentStep(currentStep + 1)
+      const nextStepData = pathSteps[currentStep + 1]
+      setCurrentFloor(nextStepData.floor)
+    }
+  }
+
+  const prevStep = () => {
+    if (currentStep > 0) {
+      setCurrentStep(currentStep - 1)
+      const prevStepData = pathSteps[currentStep - 1]
+      setCurrentFloor(prevStepData.floor)
+    }
   }
 
   return (
@@ -245,6 +436,35 @@ export default function Navigation3D() {
         </div>
       </div>
 
+      {/* Directions Panel */}
+      {showDirections && (
+        <div className="absolute top-40 left-4 z-10 w-80">
+          <DirectionsPanel pathSteps={pathSteps} currentStep={currentStep} />
+          
+          {/* Navigation Controls */}
+          <div className="mt-2 flex space-x-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={prevStep}
+              disabled={currentStep === 0}
+              className="flex-1"
+            >
+              ← Previous
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={nextStep}
+              disabled={currentStep === pathSteps.length - 1}
+              className="flex-1"
+            >
+              Next →
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Destination Info */}
       {destination && (
         <div className="absolute bottom-4 left-4 z-10">
@@ -260,6 +480,11 @@ export default function Navigation3D() {
                     <div className="text-sm text-slate-600">
                       Room {destination} • Floor {rooms.find(r => r.id === destination)?.floor}
                     </div>
+                    {pathSteps.length > 0 && (
+                      <div className="text-xs text-blue-600 mt-1">
+                        Step {currentStep + 1} of {pathSteps.length}
+                      </div>
+                    )}
                   </div>
                 </div>
                 <Button
@@ -294,7 +519,7 @@ export default function Navigation3D() {
         camera={{ position: [8, 8, 8], fov: 60 }}
         className="w-full h-full"
       >
-        <Scene3D destination={destination} currentFloor={currentFloor} />
+        <Scene3D destination={destination} currentFloor={currentFloor} pathSteps={pathSteps} />
       </Canvas>
     </div>
   )
