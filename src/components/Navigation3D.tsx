@@ -7,6 +7,7 @@ import { Input } from './ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { findPath, getPathNodes, navigationNodes, PathStep } from '../utils/pathfinding'
+import { AROverlay } from './AROverlay'
 import * as THREE from 'three'
 
 // Sample room data for St. Lawrence College
@@ -316,6 +317,7 @@ export default function Navigation3D() {
   const [pathSteps, setPathSteps] = useState<PathStep[]>([])
   const [currentStep, setCurrentStep] = useState(0)
   const [showDirections, setShowDirections] = useState(false)
+  const [isARActive, setIsARActive] = useState(false)
 
   useEffect(() => {
     if (searchQuery) {
@@ -368,6 +370,22 @@ export default function Navigation3D() {
       setCurrentFloor(prevStepData.floor)
     }
   }
+
+  const toggleAR = () => {
+    setIsARActive(!isARActive)
+  }
+
+  // Convert pathSteps to AR-compatible directions
+  const arDirections = pathSteps.map(step => ({
+    instruction: step.instruction,
+    distance: step.distance,
+    direction: step.floorChange === 'up' ? 'up' as const : 
+              step.floorChange === 'down' ? 'down' as const :
+              step.instruction.toLowerCase().includes('left') ? 'left' as const :
+              step.instruction.toLowerCase().includes('right') ? 'right' as const :
+              'straight' as const,
+    floor: step.floor
+  }))
 
   return (
     <div className="h-screen w-full bg-slate-50 relative">
@@ -521,6 +539,19 @@ export default function Navigation3D() {
       >
         <Scene3D destination={destination} currentFloor={currentFloor} pathSteps={pathSteps} />
       </Canvas>
+
+      {/* AR Overlay */}
+      {destination && (
+        <AROverlay
+          isActive={isARActive}
+          onToggle={toggleAR}
+          currentStep={currentStep}
+          directions={arDirections}
+          destination={`${destination} - ${rooms.find(r => r.id === destination)?.name}`}
+          onNextStep={nextStep}
+          onPrevStep={prevStep}
+        />
+      )}
     </div>
   )
 }
